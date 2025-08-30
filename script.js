@@ -9,6 +9,73 @@ let signaturePads = {};
 let signatureDatas = {};
 let uploadedPhotos = [];
 
+// === 新增代码开始 ===
+// 图片预加载函数
+async function preloadAllImages() {
+    const images = [
+        'ZTT-logo.png',
+        'https://via.placeholder.com/150x50/2c3e50/ffffff?text=公司Logo2',
+        'https://via.placeholder.com/150x50/e74c3c/ffffff?text=公司Logo3'
+    ];
+    
+    const loadPromises = images.map(src => {
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = resolve;
+            img.onerror = resolve;
+            img.src = src;
+        });
+    });
+    
+    await Promise.all(loadPromises);
+    await new Promise(resolve => setTimeout(resolve, 100));
+}
+// === 新增代码结束 ===
+
+function getImageBase64(src) {
+    return new Promise((resolve) => {
+        // 对于本地文件，创建一个blob URL
+        if (src.startsWith('http') || src.startsWith('data:')) {
+            // 处理网络图片或base64图片
+            const img = new Image();
+            img.crossOrigin = 'Anonymous';
+            img.onload = function() {
+                try {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+                    resolve(canvas.toDataURL('image/png'));
+                } catch (error) {
+                    console.error('图片转换失败:', error);
+                    resolve('https://via.placeholder.com/150x50/007bff/ffffff?text=Logo加载失败');
+                }
+            };
+            img.onerror = function() {
+                console.error('图片加载失败:', src);
+                resolve('https://via.placeholder.com/150x50/007bff/ffffff?text=Logo加载失败');
+            };
+            img.src = src;
+        } else {
+            // 处理本地文件 - 使用fetch API
+            fetch(src)
+                .then(response => response.blob())
+                .then(blob => {
+                    const reader = new FileReader();
+                    reader.onload = function() {
+                        resolve(reader.result);
+                    };
+                    reader.readAsDataURL(blob);
+                })
+                .catch(error => {
+                    console.error('本地图片加载失败:', error);
+                    resolve('https://via.placeholder.com/150x50/007bff/ffffff?text=Logo加载失败');
+                });
+        }
+    });
+}
+
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', function() {
     // 初始化签名板 - 添加短暂延迟确保DOM完全加载
@@ -321,57 +388,76 @@ function updateSignaturePreview(index, dataUrl) {
     }
 }
 
-// 生成PDF
-function generatePDF() {
-    // 先生成预览
-    generatePreview();
-    
-    // 获取PDF依赖库
-    const { jsPDF } = window.jspdf;
-    if (!jsPDF) {
-        alert('PDF生成库加载失败，请刷新页面重试！');
-        return;
-    }
-    
-    // 创建A4纵向PDF
-    const pdf = new jsPDF('p', 'mm', 'a4');
-    const pdfWidth = pdf.internal.pageSize.getWidth();
-    const pdfHeight = pdf.internal.pageSize.getHeight();
-    
-    // 获取预览元素
-    const element = document.getElementById('pdfPreview');
-    element.style.display = 'block'; // 临时显示预览
-    
-    // 使用html2canvas生成高清图像
-    html2canvas(element, {
-        scale: 2, // 2倍缩放，提升清晰度
-        useCORS: true,
-        logging: false,
-        backgroundColor: '#ffffff',
-        windowWidth: element.scrollWidth,
-        windowHeight: element.scrollHeight
-    }).then(canvas => {
+// 修改generatePDF函数为异步函数
+async function generatePDF() {
+    try {
+        // 显示加载提示
+        const generateBtn = document.getElementById('generateBtn');
+        const originalText = generateBtn.textContent;
+        generateBtn.textContent = '正在生成PDF...';
+        generateBtn.disabled = true;
+        
+        // 预加载所有图片
+        await preloadAllImages();
+        
+        // 先生成预览
+        try {
+            // 转换logo为base64
+            const logoBase64 = await getImageBase64('ZTT-logo.png');
+            generatePreview(logoBase64);
+        } catch (error) {
+            console.error('Logo转换失败:', error);
+            generatePreview('https://via.placeholder.com/150x50/007bff/ffffff?text=Logo加载失败');
+        }
+        
+        // 等待预览渲染完成
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        // 获取PDF依赖库
+        const { jsPDF } = window.jspdf;
+        if (!jsPDF) {
+            alert('PDF生成库加载失败，请刷新页面重试！');
+            return;
+        }
+        
+        // 创建A4纵向PDF
+        const pdf = new jsPDF('p', 'mm', 'a4');
+        const pdfWidth = pdf.internal.pageSize.getWidth();
+        const pdfHeight = pdf.internal.pageSize.getHeight();
+        
+        // 获取预览元素
+        const element = document.getElementById('pdfPreview');
+        element.style.display = 'block';
+        
+        // 使用html2canvas生成高清图像
+        const canvas = await html2canvas(element, {
+            scale: 2,
+            useCORS: true,
+            logging: false,
+            backgroundColor: '#ffffff',
+            allowTaint: false,
+            windowWidth: element.scrollWidth,
+            windowHeight: element.scrollHeight
+        });
+        
         // 隐藏预览
         element.style.display = 'none';
         
         // 计算图像在PDF中的尺寸
-        const imgWidth = pdfWidth - 20; // 左右留10mm边距
+        const imgWidth = pdfWidth - 20;
         const imgHeight = (canvas.height * imgWidth) / canvas.width;
         
         // 处理长内容分页
-        let position = 10; // 顶部留10mm边距
-        const pageHeight = pdfHeight - 20; // 底部留10mm边距
+        let position = 10;
+        const pageHeight = pdfHeight - 20;
         let currentPage = 1;
         let totalPages = Math.ceil(imgHeight / pageHeight);
         
-        // 添加页码水印函数 - 使用文本而不是图像
+        // 添加页码水印函数
         const addPageNumber = (pageNum, totalPages) => {
-            // 设置字体 - 使用内置字体避免中文乱码
             pdf.setFont("helvetica", "normal");
             pdf.setFontSize(10);
             pdf.setTextColor(150, 150, 150);
-            
-            // 添加页码文本
             const pageText = `Page ${pageNum} of ${totalPages}`;
             pdf.text(pageText, pdfWidth - 20, pdfHeight - 5);
         };
@@ -410,9 +496,9 @@ function generatePDF() {
                 addPageNumber(currentPage, totalPages);
                 
                 if (remainingHeight > pageHeight) {
-                    pdf.addPage(); // 新增页面
+                    pdf.addPage();
                     currentPage++;
-                    position = 10; // 重置位置到页面顶部
+                    position = 10;
                 }
                 
                 remainingHeight -= currentHeight;
@@ -424,14 +510,24 @@ function generatePDF() {
         const projectName = document.getElementById('projectName').value || '海上风电项目';
         const reportDate = document.getElementById('reportDate').value || new Date().toISOString().slice(0, 10);
         pdf.save(`${projectName}_每日进度报告_${reportDate}.pdf`);
-    }).catch(err => {
-        element.style.display = 'none';
-        alert(`PDF生成失败：${err.message}`);
-    });
+        
+    } catch (error) {
+        // 添加catch块来处理错误
+        console.error('PDF生成错误:', error);
+        alert(`PDF生成失败：${error.message}`);
+    } finally {
+        // 恢复按钮状态
+        const generateBtn = document.getElementById('generateBtn');
+        if (generateBtn) {
+            generateBtn.textContent = '生成PDF报告';
+            generateBtn.disabled = false;
+        }
+        document.getElementById('pdfPreview').style.display = 'none';
+    }
 }
 
 // 生成PDF预览内容
-function generatePreview() {
+function generatePreview(logoBase64) {
     const projectName = document.getElementById('projectName').value || '海上风电项目';
     const reportDate = document.getElementById('reportDate').value || new Date().toLocaleDateString();
     const reportNumber = document.getElementById('reportNumber').value || '未填写';
@@ -517,12 +613,13 @@ function generatePreview() {
             <h2>海上风电项目</h2>
             <p>每日进度报告</p>
             <div>
-                <img id="companyLogo" src="ZTT-logo.png" alt="公司logo">
-                <img src="https://via.placeholder.com/150x50/2c3e50/ffffff?text=公司Logo2" alt="公司Logo2">
-                <img src="https://via.placeholder.com/150x50/e74c3c/ffffff?text=公司Logo3" alt="公司Logo3">
+                <img src="${logoBase64}" alt="公司logo" style="max-height: 50px; display: block; margin: 0 auto;">
+                
+                <img src="https://via.placeholder.com/150x50/2c3e50/ffffff?text=公司Logo2" alt="公司Logo2" style="max-height: 50px;">
+                <img src="https://via.placeholder.com/150x50/e74c3c/ffffff?text=公司Logo3" alt="公司Logo3" style="max-height: 50px;">
             </div>
         </div>
-                
+        
         <div class="pdf-header">
             <h3>${projectName} 每日进度报告</h3>
             <p>报告日期: ${reportDate}</p>
@@ -530,8 +627,8 @@ function generatePreview() {
                 
         <div class="company-intro">
             <h5>公司介绍</h5>
-            <p>我们是一家专业从事海上风电项目的工程公司，拥有十年以上的行业经验和专业团队，致力于为客户提供高质量的服务。</p>
-            <p><strong>联系方式:</strong> 电话: 0123-456789 | 邮箱: info@example.com | 地址: 某省某市某区某街道123号</p>
+            <p>xxxxxxxxxxxxxxxxxxx</p>
+            <p><strong>联系方式:</strong> 电话: xxxx-xxxxxx | 邮箱: xxxx.com | 地址: 某省某市某xxxxx号</p>
         </div>
                 
         <table class="table table-bordered">
